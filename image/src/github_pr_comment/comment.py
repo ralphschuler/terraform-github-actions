@@ -68,16 +68,16 @@ class TerraformComment:
 
 
 def _format_comment_header(**kwargs) -> str:
-    args = ' '.join(f'{k}={v}' for k, v in kwargs.items())
-    return f'<!-- dflook/terraform-github-actions {args} -->'
+    return f'<!-- dflook/terraform-github-actions {json.dumps(kwargs)} -->'
 
 
 def _parse_comment_header(comment_header: Optional[str]) -> dict[str, str]:
     if comment_header is None:
         return {}
 
-    if header := re.match(r'^<!--\sdflook/terraform-github-actions\s(?P<args>.*?)-->', comment_header):
-        return {arg['key']: arg['value'] for arg in re.finditer(r'(?P<key>\S+)=(?P<value>\S+)', header['args'])}
+    if header := re.match(r'^<!--\sdflook/terraform-github-actions\s(?P<args>.*)\s-->', comment_header):
+        # Todo catch json parse exception
+        return json.loads(header['args'])
 
     return {}
 

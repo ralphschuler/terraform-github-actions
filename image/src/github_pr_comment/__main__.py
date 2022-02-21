@@ -178,13 +178,15 @@ def get_comment(action_inputs: PlanPrInputs) -> TerraformComment:
     legacy_description = format_classic_description(action_inputs)
 
     headers = {
-        'backend_type': os.environ.get('TERRAFORM_BACKEND', ''),
         'workspace': os.environ.get('INPUT_WORKSPACE', 'default'),
         'backend': hashlib.sha256(legacy_description.encode()).hexdigest()
     }
 
-    if os.environ.get('INPUT_LABEL'):
-        headers['label'] = os.environ['INPUT_LABEL']
+    if backend_type := os.environ.get('TERRAFORM_BACKEND_TYPE'):
+        headers['backend_type'] = backend_type
+
+    if label := os.environ.get('INPUT_LABEL'):
+        headers['label'] = hashlib.sha256(label.encode()).hexdigest()
 
     return find_comment(github, issue_url, username, headers, legacy_description)
 
