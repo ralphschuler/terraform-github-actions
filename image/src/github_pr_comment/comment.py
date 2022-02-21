@@ -1,3 +1,4 @@
+import json
 import os
 import re
 from typing import Optional, Any
@@ -81,7 +82,7 @@ def _parse_comment_header(comment_header: Optional[str]) -> dict[str, str]:
     return {}
 
 
-def _from_api_payload(comment: dict[str, Any]) -> TerraformComment:
+def _from_api_payload(comment: dict[str, Any]) -> Optional[TerraformComment]:
     match = re.match(rf'''
             (?P<headers><!--.*?-->)?
             (?P<description>.*)
@@ -98,7 +99,7 @@ def _from_api_payload(comment: dict[str, Any]) -> TerraformComment:
                      )
 
     if not match:
-        raise ValueError('Not a terraform PR comment')
+        return None
 
     return TerraformComment(
         issue_url=comment['issue_url'],
@@ -162,18 +163,24 @@ def find_comment(github: GithubApi, issue_url: IssueUrl, username: str, headers:
 
     backup_comment = None
 
-    for comment in github.paged_get(issue_url):
-        if comment['user']['login'] != username:
+    for comment_payload in github.paged_get(issue_url):
+        if comment_payload['user']['login'] != username:
             continue
 
-        comment = _from_api_payload(comment)
+        debug(json.dumps(comment_payload))
 
-        if comment.headers == headers:
-            debug('Found comment that matches headesr')
-            return comment
+        if comment := _from_api_payload(comment_payload):
 
-        if comment.description == legacy_description:
-            backup_comment = comment
+            if comment.headers == headers:
+                debug('Found comment that matches headers')
+                return comment
+
+            debug(f"Didn't match comment with {comment.headers=}")
+
+            if comment.description == legacy_description:
+                backup_comment = comment
+
+            debug(f"Didn't match comment with {comment.description=}")
 
     if backup_comment is not None:
         debug('Found comment matching legacy description')

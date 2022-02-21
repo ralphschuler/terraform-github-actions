@@ -1,5 +1,3 @@
-#!/usr/bin/python3
-
 import hashlib
 import json
 import os
@@ -101,6 +99,25 @@ def format_classic_description(action_inputs: PlanPrInputs) -> str:
     return label
 
 
+def create_summary(plan: Plan) -> Optional[str]:
+    summary = None
+
+    for line in plan.splitlines():
+        if line.startswith('No changes') or line.startswith('Error'):
+            return line
+
+        if line.startswith('Plan:'):
+            summary = line
+
+        if line.startswith('Changes to Outputs'):
+            if summary:
+                return summary + ' Changes to Outputs.'
+            else:
+                return 'Changes to Outputs'
+
+    return summary
+
+
 def current_user(actions_env: GithubEnv) -> str:
     token_hash = hashlib.sha256(actions_env['GITHUB_TOKEN'].encode()).hexdigest()
     cache_key = f'token-cache/{token_hash}'
@@ -121,25 +138,6 @@ def current_user(actions_env: GithubEnv) -> str:
         job_cache[cache_key] = username
 
     return username
-
-
-def create_summary(plan: Plan) -> Optional[str]:
-    summary = None
-
-    for line in plan.splitlines():
-        if line.startswith('No changes') or line.startswith('Error'):
-            return line
-
-        if line.startswith('Plan:'):
-            summary = line
-
-        if line.startswith('Changes to Outputs'):
-            if summary:
-                return summary + ' Changes to Outputs.'
-            else:
-                return 'Changes to Outputs'
-
-    return summary
 
 
 def get_issue_url(pr_url: str) -> IssueUrl:
