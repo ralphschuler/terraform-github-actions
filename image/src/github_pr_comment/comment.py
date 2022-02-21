@@ -1,6 +1,7 @@
 import json
 import os
 import re
+from json import JSONDecodeError
 from typing import Optional, Any
 
 from github_actions.api import IssueUrl, GithubApi, CommentUrl
@@ -76,8 +77,10 @@ def _parse_comment_header(comment_header: Optional[str]) -> dict[str, str]:
         return {}
 
     if header := re.match(r'^<!--\sdflook/terraform-github-actions\s(?P<args>.*)\s-->', comment_header):
-        # Todo catch json parse exception
-        return json.loads(header['args'])
+        try:
+            return json.loads(header['args'])
+        except JSONDecodeError:
+            return {}
 
     return {}
 
