@@ -182,7 +182,7 @@ def get_comment(action_inputs: PlanPrInputs) -> TerraformComment:
     headers = {
         'backend_type': os.environ.get('TERRAFORM_BACKEND', ''),
         'workspace': os.environ.get('INPUT_WORKSPACE', 'default'),
-        'backend': hashlib.sha256(legacy_description).hexdigest()
+        'backend': hashlib.sha256(legacy_description.encode()).hexdigest()
     }
 
     if os.environ.get('INPUT_LABEL'):
