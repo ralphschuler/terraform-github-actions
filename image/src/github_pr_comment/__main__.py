@@ -3,16 +3,16 @@
 import hashlib
 import json
 import os
-import re
 import sys
-from typing import (NewType, Optional, Tuple, cast)
+from typing import (NewType, Optional, cast)
 
-from github_actions.api import GithubApi, IssueUrl, CommentUrl
+from github_actions.api import GithubApi, IssueUrl, PrUrl
 from github_actions.cache import ActionsCache
 from github_actions.debug import debug
 from github_actions.env import GithubEnv
 from github_actions.find_pr import find_pr, WorkflowException
 from github_actions.inputs import PlanPrInputs
+from github_pr_comment.comment import find_comment, TerraformComment, update_comment
 
 Plan = NewType('Plan', str)
 Status = NewType('Status', str)
@@ -22,47 +22,41 @@ step_cache = ActionsCache(os.environ.get('STEP_TMP_DIR', '.'), 'step_cache')
 
 env = cast(GithubEnv, os.environ)
 
-github = GithubApi(env['GITHUB_API_URL'], env['GITHUB_TOKEN'])
+github = GithubApi(env.get('GITHUB_API_URL', 'https://api.github.com'), env.get('GITHUB_TOKEN'))
 
 
-def plan_identifier(action_inputs: PlanPrInputs) -> str:
-    def mask_backend_config() -> Optional[str]:
+def _mask_backend_config(action_inputs: PlanPrInputs) -> Optional[str]:
+    bad_words = [
+        'token',
+        'password',
+        'sas_token',
+        'access_key',
+        'secret_key',
+        'client_secret',
+        'access_token',
+        'http_auth',
+        'secret_id',
+        'encryption_key',
+        'key_material',
+        'security_token',
+        'conn_str',
+        'sse_customer_key',
+        'application_credential_secret'
+    ]
 
-        bad_words = [
-            'token',
-            'password',
-            'sas_token',
-            'access_key',
-            'secret_key',
-            'client_secret',
-            'access_token',
-            'http_auth',
-            'secret_id',
-            'encryption_key',
-            'key_material',
-            'security_token',
-            'conn_str',
-            'sse_customer_key',
-            'application_credential_secret'
-        ]
+    clean = []
 
-        def has_bad_word(s: str) -> bool:
-            for bad_word in bad_words:
-                if bad_word in s:
-                    return True
-            return False
+    for field in action_inputs.get('INPUT_BACKEND_CONFIG', '').split(','):
+        if not field:
+            continue
 
-        clean = []
+        if not any(bad_word in field for bad_word in bad_words):
+            clean.append(field)
 
-        for field in action_inputs.get('INPUT_BACKEND_CONFIG', '').split(','):
-            if not field:
-                continue
+    return ','.join(clean)
 
-            if not has_bad_word(field):
-                clean.append(field)
 
-        return ','.join(clean)
-
+def format_classic_description(action_inputs: PlanPrInputs) -> str:
     if action_inputs['INPUT_LABEL']:
         return f'Terraform plan for __{action_inputs["INPUT_LABEL"]}__'
 
@@ -79,8 +73,7 @@ def plan_identifier(action_inputs: PlanPrInputs) -> str:
         label += '\nReplacing resources: '
         label += ', '.join(f'`{res.strip()}`' for res in action_inputs['INPUT_REPLACE'].splitlines())
 
-    backend_config = mask_backend_config()
-    if backend_config:
+    if backend_config := _mask_backend_config(action_inputs):
         label += f'\nWith backend config: `{backend_config}`'
 
     if action_inputs["INPUT_BACKEND_CONFIG_FILE"]:
@@ -109,25 +102,22 @@ def plan_identifier(action_inputs: PlanPrInputs) -> str:
 
 
 def current_user(actions_env: GithubEnv) -> str:
-
-    def get_username():
-        response = github.get(f'{actions_env["GITHUB_API_URL"]}/user')
-        if response.status_code != 403:
-            user = response.json()
-            debug(json.dumps(user))
-
-            return user['login']
-        else:
-            # Assume this is the github actions app token
-            return 'github-actions[bot]'
-
     token_hash = hashlib.sha256(actions_env['GITHUB_TOKEN'].encode()).hexdigest()
     cache_key = f'token-cache/{token_hash}'
 
     if cache_key in job_cache:
         username = job_cache[cache_key]
     else:
-        username = get_username()
+        response = github.get(f'{actions_env["GITHUB_API_URL"]}/user')
+        if response.status_code != 403:
+            user = response.json()
+            debug(json.dumps(user))
+
+            username = user['login']
+        else:
+            # Assume this is the github actions app token
+            username = 'github-actions[bot]'
+
         job_cache[cache_key] = username
 
     return username
@@ -152,122 +142,23 @@ def create_summary(plan: Plan) -> Optional[str]:
     return summary
 
 
-def format_body(action_inputs: PlanPrInputs, plan: Plan, status: Status, collapse_threshold: int) -> str:
-    details_open = ''
-    highlighting = ''
-
-    summary_line = create_summary(plan)
-
-    if plan.startswith('Error'):
-        details_open = ' open'
-    elif 'Plan:' in plan:
-        highlighting = 'hcl'
-        num_lines = len(plan.splitlines())
-        if num_lines < collapse_threshold:
-            details_open = ' open'
-
-    if summary_line is None:
-        details_open = ' open'
-
-    body = f'''{plan_identifier(action_inputs)}
-<details{details_open}>
-{f'<summary>{summary_line}</summary>' if summary_line is not None else ''}
-
-```{highlighting}
-{plan}
-```
-</details>
-'''
-
-    if status:
-        body += '\n' + status
-
-    return body
-
-
-def update_comment(issue_url: IssueUrl,
-                   comment_url: Optional[CommentUrl],
-                   body: str,
-                   only_if_exists: bool = False) -> Optional[CommentUrl]:
-    """
-    Update (or create) a comment
-
-    :param issue_url: The url of the issue to create or update the comment in
-    :param comment_url: The url of the comment to update
-    :param body: The new comment body
-    :param only_if_exists: Only update an existing comment - don't create it
-    """
-
-    if comment_url is None:
-        if only_if_exists:
-            debug('Comment doesn\'t already exist - not creating it')
-            return None
-        # Create a new comment
-        debug('Creating comment')
-        response = github.post(issue_url, json={'body': body})
-    else:
-        # Update existing comment
-        debug('Updating existing comment')
-        response = github.patch(comment_url, json={'body': body})
-
-    debug(body)
-    debug(response.content.decode())
-    response.raise_for_status()
-    return cast(CommentUrl, response.json()['url'])
-
-
-def find_issue_url(pr_url: str) -> IssueUrl:
-
-    def get_issue_url():
-        response = github.get(pr_url)
-        response.raise_for_status()
-        return cast(IssueUrl, response.json()['_links']['issue']['href'] + '/comments')
-
+def get_issue_url(pr_url: str) -> IssueUrl:
     pr_hash = hashlib.sha256(pr_url.encode()).hexdigest()
     cache_key = f'issue-href-cache/{pr_hash}'
 
     if cache_key in job_cache:
         issue_url = job_cache[cache_key]
     else:
-        issue_url = get_issue_url()
+        response = github.get(pr_url)
+        response.raise_for_status()
+        issue_url = response.json()['_links']['issue']['href'] + '/comments'
+
         job_cache[cache_key] = issue_url
 
     return cast(IssueUrl, issue_url)
 
 
-def find_comment(issue_url: IssueUrl, username: str, action_inputs: PlanPrInputs) -> Tuple[Optional[CommentUrl], Optional[Plan]]:
-    debug('Looking for an existing comment:')
-
-    plan_id = plan_identifier(action_inputs)
-
-    for comment in github.paged_get(issue_url):
-        debug(json.dumps(comment))
-        if comment['user']['login'] == username:
-            match = re.match(rf'{re.escape(plan_id)}.*```(?:hcl)?(.*?)```.*', comment['body'], re.DOTALL)
-
-            if match:
-                return comment['url'], cast(Plan, match.group(1).strip())
-
-    return None, None
-
-
-def main() -> None:
-    if len(sys.argv) < 2:
-        sys.stderr.write(f'''Usage:
-    STATUS="<status>" {sys.argv[0]} plan <plan.txt
-    STATUS="<status>" {sys.argv[0]} status
-    {sys.argv[0]} get >plan.txt
-''')
-
-    debug(repr(sys.argv))
-
-    action_inputs = cast(PlanPrInputs, os.environ)
-
-    try:
-        collapse_threshold = int(os.environ['TF_PLAN_COLLAPSE_LENGTH'])
-    except (ValueError, KeyError):
-        collapse_threshold = 10
-
+def get_pr() -> PrUrl:
     if 'pr_url' in step_cache:
         pr_url = step_cache['pr_url']
     else:
@@ -278,47 +169,79 @@ def main() -> None:
             sys.stderr.write('\n' + str(e) + '\n')
             sys.exit(1)
 
-    issue_url = find_issue_url(pr_url)
+    return cast(PrUrl, pr_url)
 
-    # Username is cached in the job tmp dir
+
+def get_comment(action_inputs: PlanPrInputs) -> TerraformComment:
+    pr_url = get_pr()
+    issue_url = get_issue_url(pr_url)
     username = current_user(env)
 
-    if 'comment_url' in step_cache and 'plan' in step_cache:
-        comment_url = step_cache['comment_url']
-        plan = step_cache['plan']
-    else:
-        comment_url, plan = find_comment(issue_url, username, action_inputs)
+    legacy_description = format_classic_description(action_inputs)
+
+    headers = {
+        'backend_type': os.environ.get('TERRAFORM_BACKEND', ''),
+        'workspace': os.environ.get('INPUT_WORKSPACE', 'default'),
+        'backend': hashlib.sha256(legacy_description).hexdigest()
+    }
+
+    if os.environ.get('INPUT_LABEL'):
+        headers['label'] = os.environ['INPUT_LABEL']
+
+    return find_comment(github, issue_url, username, headers, legacy_description)
+
+
+def main() -> int:
+    if len(sys.argv) < 2:
+        sys.stderr.write(f'''Usage:
+    STATUS="<status>" {sys.argv[0]} plan <plan.txt
+    STATUS="<status>" {sys.argv[0]} status
+    {sys.argv[0]} get plan.txt
+''')
+        return 1
+
+    debug(repr(sys.argv))
+
+    action_inputs = cast(PlanPrInputs, os.environ)
+
+    comment = get_comment(action_inputs)
 
     status = cast(Status, os.environ.get('STATUS', ''))
 
-    only_if_exists = False
-
     if sys.argv[1] == 'plan':
-        plan = cast(Plan, sys.stdin.read().strip())
+        body = cast(Plan, sys.stdin.read().strip())
+        description = format_classic_description(action_inputs)
 
+        only_if_exists = False
         if action_inputs['INPUT_ADD_GITHUB_COMMENT'] == 'changes-only' and os.environ.get('TF_CHANGES', 'true') == 'false':
             only_if_exists = True
 
-        body = format_body(action_inputs, plan, status, collapse_threshold)
-        comment_url = update_comment(issue_url, comment_url, body, only_if_exists)
+        if comment.comment_url is None and only_if_exists:
+            debug('Comment doesn\'t already exist - not creating it')
+            return 0
+
+        update_comment(
+            github,
+            comment,
+            description=description,
+            summary=create_summary(body),
+            body=body,
+            status=status
+        )
 
     elif sys.argv[1] == 'status':
-        if plan is None:
-            sys.exit(1)
+        if comment.comment_url is None:
+            return 1
         else:
-            body = format_body(action_inputs, plan, status, collapse_threshold)
-            comment_url = update_comment(issue_url, comment_url, body, only_if_exists)
+            update_comment(github, comment, status=status)
 
     elif sys.argv[1] == 'get':
-        if plan is None:
-            sys.exit(1)
+        if comment.comment_url is None:
+            return 1
 
         with open(sys.argv[2], 'w') as f:
-            f.write(plan)
-
-    step_cache['comment_url'] = comment_url
-    step_cache['plan'] = plan
+            f.write(comment.body)
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

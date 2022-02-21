@@ -11,6 +11,7 @@ GitHubUrl = NewType('GitHubUrl', str)
 PrUrl = NewType('PrUrl', GitHubUrl)
 IssueUrl = NewType('IssueUrl', GitHubUrl)
 CommentUrl = NewType('CommentUrl', GitHubUrl)
+CommentReactionUrl = NewType('CommentReactionUrl', GitHubUrl)
 
 
 class GithubApi:
