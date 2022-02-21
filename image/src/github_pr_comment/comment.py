@@ -84,7 +84,7 @@ def _parse_comment_header(comment_header: Optional[str]) -> dict[str, str]:
 
 def _from_api_payload(comment: dict[str, Any]) -> Optional[TerraformComment]:
     match = re.match(rf'''
-            (?P<headers><!--.*?-->)?
+            (?P<headers><!--.*?-->\n)?
             (?P<description>.*)
             <details>
             (?:<summary>(?P<summary>.*)?</summary>)?
@@ -129,15 +129,16 @@ def _to_api_payload(comment: TerraformComment) -> str:
 
     header = _format_comment_header(**comment.headers)
 
-    body = f'''{header}{comment.description}
-    <details{details_open}>
-    {f'<summary>{comment.summary}</summary>' if comment.summary is not None else ''}
+    body = f'''{header}
+{comment.description}
+<details{' open' if details_open else ''}>
+{f'<summary>{comment.summary}</summary>' if comment.summary is not None else ''}
 
-    ```{'hcl' if hcl_highlighting else ''}
-    {comment.body}
-    ```
-    </details>
-    '''
+```{'hcl' if hcl_highlighting else ''}
+{comment.body}
+```
+</details>
+'''
 
     if comment.status:
         body += '\n' + comment.status
