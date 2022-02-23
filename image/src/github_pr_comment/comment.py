@@ -88,7 +88,7 @@ def _parse_comment_header(comment_header: Optional[str]) -> dict[str, str]:
 def _from_api_payload(comment: dict[str, Any]) -> Optional[TerraformComment]:
     match = re.match(rf'''
             (?P<headers><!--.*?-->\n)?
-            (?P<description>.*?)
+            (?P<description>.*)
             <details>\s*
             (?:<summary>(?P<summary>.*?)</summary>\s*)?
             ```(?:hcl)?
